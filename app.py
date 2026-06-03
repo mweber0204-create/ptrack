@@ -55,10 +55,11 @@ max_per_sector = st.sidebar.slider("Max picks per sector", 1, 8, 3,
 
 # ---- Profitability levers (apply to BOTH screening and backtest) ----
 with st.sidebar.expander("⚙️ Edge filters (advanced)"):
-    st.caption("Tilt toward what the backtest showed works. All off = original rules.")
-    only_winners = st.checkbox("Trade only the proven patterns",
-                               help="VCP, Flat Base, Cup & Handle. Drops Ascending "
-                                    "Triangle & Bull Flag, which lost money historically.")
+    st.caption("Tilt toward what the backtest showed works. Defaults = original rules.")
+    pattern_choice = st.radio(
+        "Patterns to trade",
+        ["All patterns", "Proven only (VCP + Flat Base + Cup & Handle)", "VCP only"],
+        help="VCP was your highest win-rate pattern. 'VCP only' judges by it alone.")
     market_filter = st.checkbox("Only when market (SPY) is above its 200-day",
                                 help="Skips long setups during weak markets.")
     min_score = st.slider("Minimum setup score", 0, 90, 0, step=5,
@@ -67,8 +68,13 @@ with st.sidebar.expander("⚙️ Edge filters (advanced)"):
                           help="Pushes VCP setups higher in the list.")
 
 # push the chosen levers into the engine config
-P.CFG["allowed_patterns"] = ({"Volatility Contraction Pattern (VCP)", "Flat Base",
-                              "Cup and Handle"} if only_winners else None)
+if pattern_choice == "VCP only":
+    P.CFG["allowed_patterns"] = {"Volatility Contraction Pattern (VCP)"}
+elif pattern_choice.startswith("Proven"):
+    P.CFG["allowed_patterns"] = {"Volatility Contraction Pattern (VCP)",
+                                 "Flat Base", "Cup and Handle"}
+else:
+    P.CFG["allowed_patterns"] = None
 P.CFG["require_market_uptrend"] = market_filter
 P.CFG["min_score"] = float(min_score)
 P.CFG["vcp_score_bonus"] = float(vcp_bonus)
