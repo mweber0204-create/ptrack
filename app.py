@@ -173,6 +173,10 @@ def render_squeeze_candidate(c, header, expanded=True):
         m2.metric("Data coverage", f"{cov*100:.0f}%" if cov is not None else "—")
         m3.metric("5-day move", f"{c['ret_5d']*100:+.0f}%" if c.get("ret_5d") is not None else "—",
                   "LATE" if c.get("late") else "")
+        if c.get("history_flags"):
+            st.markdown("**📈 What CHANGED since last scan (the early edge):**")
+            for hf in c["history_flags"]:
+                st.markdown(f"- {hf}")
         if c.get("flags"):
             st.markdown("**Leading signals firing:**")
             for fl in c["flags"]:
@@ -214,18 +218,20 @@ if mode == "🔥 Squeeze Radar":
             mc1, mc2 = st.columns(2)
             man_ctb = mc1.number_input("Cost to Borrow %", min_value=0.0, value=0.0, step=1.0)
             man_util = mc2.number_input("Utilization %", min_value=0.0, max_value=100.0, value=0.0, step=1.0)
+        incl_feeds = st.checkbox("Also check 13D / insider / WSB feeds (slower)", value=False)
         if go and sym.strip():
             with st.spinner(f"Analyzing {sym.upper().strip()}…"):
-                try:
-                    one = SQ.analyze_ticker(sym, ctb=(man_ctb or None), util=(man_util or None))
-                except Exception as e:
-                    one = None; st.error(f"Couldn't analyze: {e}")
-            if one and one.get("ok"):
+                one = SQ.analyze_ticker(sym, ctb=(man_ctb or None), util=(man_util or None),
+                                        include_feeds=incl_feeds)
+            if one.get("error"):
+                st.error(f"Couldn't analyze: {one['error']}")
+            elif one.get("ok"):
                 render_squeeze_candidate(
                     one, f"{one['ticker']} — Tier {one.get('tier','?')} — "
                          f"score {one.get('score',0)}/100", expanded=True)
-            elif one:
-                st.warning(f"No price data for '{sym.upper().strip()}' — check the symbol.")
+            else:
+                st.warning(f"No price data for '{sym.upper().strip()}'. Double-check the symbol "
+                           "(US-listed), then try again — Yahoo occasionally rate-limits.")
 
     st.markdown("#### 📡 Scan the market for setups")
     wl_text = st.text_input("Optional: add your own tickers (comma-separated) to always include",

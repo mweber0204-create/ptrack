@@ -32,6 +32,10 @@ import os, re, io, sys, time, json, datetime as dt
 import urllib.request, urllib.parse
 import numpy as np
 import pandas as pd
+try:
+    import squeeze_history as HIST
+except Exception:
+    HIST = None
 
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
@@ -450,55 +454,78 @@ def run_squeeze(watchlist=None, progress=None):
         results.append(c)
         if progress: progress((i+1)/n)
         time.sleep(0.05)
+    # ---- MEMORY: log today's snapshot + attach rate-of-change signals ----
+    if HIST is not None:
+        try:
+            HIST.record(results)
+            HIST.attach_changes(results)
+        except Exception as e:
+            print(f"  ! history: {e}", file=sys.stderr)
     # pre-move setups first (not late), then by score; late movers sink to the bottom
     results.sort(key=lambda x: (x.get("late", False), -x["score"]))
     return results
 
-def analyze_ticker(tkr, ctb=None, util=None):
-    """Run the full weighted model on ONE symbol on demand (works even if the
-    leading-signal feeds didn't surface it). ctb/util can be passed manually
-    (e.g. from Fintel/IBKR) to lift data coverage toward 100%."""
-    import yfinance as yf
+def analyze_ticker(tkr, ctb=None, util=None, include_feeds=False):
+    """Run the full weighted model on ONE symbol on demand. Fast & defensive:
+    uses only the quick Yahoo data by default. The three broad feeds (EDGAR /
+    OpenInsider / WSB) can be slow or rate-limited on a hosted app, so they are
+    OFF by default for single-stock analysis and never allowed to break it.
+    ctb/util can be passed manually to lift coverage toward 100%. Always returns
+    a dict (never raises); c['error'] is set if something went wrong."""
     tk = str(tkr).upper().strip()
-    c = {"ticker": tk}
-    if ctb is not None:  c["ctb"] = float(ctb)
-    if util is not None: c["util"] = float(util)
-    # price history
-    df = None
+    c = {"ticker": tk, "ok": False}
     try:
-        df = yf.download(tk, period="1y", auto_adjust=False, progress=False)
-        if df is not None and isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-    except Exception:
+        import yfinance as yf
+        if ctb not in (None, "", 0):  c["ctb"] = float(ctb)
+        if util not in (None, "", 0): c["util"] = float(util)
+        # price history (quick)
         df = None
-    pf = price_features(df.dropna() if df is not None else None)
-    if pf: c.update(pf)
-    # short interest / float + options proxy
-    c.update({k: v for k, v in get_si_info(tk).items() if v is not None})
-    pc = get_options_pc(tk)
-    if pc is not None: c["pc_ratio"] = pc
-    # cross-reference the free leading-signal feeds (best-effort)
-    try:
-        a = fetch_apewisdom().get(tk)
-        if a: c["soc_mentions"]=a["mentions"]; c["soc_prev"]=a["prev"]; c["soc_growth"]=a["growth"]
-    except Exception: pass
-    try:
-        v = fetch_openinsider_buys().get(tk)
-        if v: c["insider_buy_$"] = v
-    except Exception: pass
-    try:
-        f = fetch_edgar_activist(CFG["edgar_lookback_d"]).get(tk)
-        if f: c["edgar_form"] = f
-    except Exception: pass
-    # score
-    score, breakdown, coverage = score_weighted(c)
-    _, parts, flags = score_candidate(c)
-    c["score"], c["breakdown"], c["coverage"] = score, breakdown, coverage
-    c["parts"], c["flags"] = parts, flags
-    c["late"] = (c.get("ret_5d") or 0) >= CFG["max_recent_runup"]
-    c["tier"] = tier(score)
-    c["disq"] = disqualifier_notes(c)
-    c["ok"] = bool(pf)            # did we get price data?
+        try:
+            df = yf.download(tk, period="1y", auto_adjust=False, progress=False)
+            if df is not None and isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+        except Exception:
+            df = None
+        pf = price_features(df.dropna() if df is not None else None)
+        if pf: c.update(pf)
+        # short interest / float + options proxy (each wrapped internally)
+        try: c.update({k: v for k, v in get_si_info(tk).items() if v is not None})
+        except Exception: pass
+        try:
+            pc = get_options_pc(tk)
+            if pc is not None: c["pc_ratio"] = pc
+        except Exception: pass
+        # optional, never-blocking leading-signal feeds
+        if include_feeds:
+            try:
+                a = fetch_apewisdom().get(tk)
+                if a: c["soc_mentions"]=a["mentions"]; c["soc_prev"]=a["prev"]; c["soc_growth"]=a["growth"]
+            except Exception: pass
+            try:
+                v = fetch_openinsider_buys().get(tk)
+                if v: c["insider_buy_$"] = v
+            except Exception: pass
+            try:
+                f = fetch_edgar_activist(CFG["edgar_lookback_d"]).get(tk)
+                if f: c["edgar_form"] = f
+            except Exception: pass
+        # score
+        score, breakdown, coverage = score_weighted(c)
+        _, parts, flags = score_candidate(c)
+        c["score"], c["breakdown"], c["coverage"] = score, breakdown, coverage
+        c["parts"], c["flags"] = parts, flags
+        c["late"] = (c.get("ret_5d") or 0) >= CFG["max_recent_runup"]
+        c["tier"] = tier(score)
+        c["disq"] = disqualifier_notes(c)
+        c["ok"] = bool(pf)            # did we get price data?
+        # MEMORY: log + attach change-signals for this ticker
+        if HIST is not None and c["ok"]:
+            try:
+                HIST.record([c]); HIST.attach_changes([c])
+            except Exception:
+                pass
+    except Exception as e:
+        c["error"] = f"{type(e).__name__}: {e}"
     return c
 
 def to_row(c):
