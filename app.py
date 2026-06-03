@@ -154,14 +154,14 @@ def run_backtest(universe, status, bar):
         time.sleep(0.3)
     return trades
 
-# ---------------------------------------------------------------- shark art
-SHARK_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shark.png")
+# ---------------------------------------------------------------- bull art
+BULL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bull.png")
 
-def show_shark():
-    if os.path.exists(SHARK_PATH):
+def show_bull():
+    if os.path.exists(BULL_PATH):
         c1, c2, c3 = st.columns([1, 2, 1])
         with c2:
-            st.image(SHARK_PATH, use_container_width=True)
+            st.image(BULL_PATH, use_container_width=True)
 
 # ---------------------------------------------------------------- main UI
 st.title("P-TRACK — Bullish Setup Screener")
@@ -208,7 +208,7 @@ if mode == "Screen for stocks":
                     st.caption("**Why this rank:** " + P.rank_reason(m, r))
                     st.caption("**Volume:** " + P.vol_trend_text(m))
 
-    show_shark()
+    show_bull()
 
 else:  # Backtest
     st.write("Measure how these breakout setups performed historically "
