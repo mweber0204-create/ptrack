@@ -43,6 +43,8 @@ CFG = dict(
     min_avg_volume    = 300_000, # tradeability floor
     edgar_lookback_d  = 21,      # how many days of 13D/13G filings to scan
     max_candidates    = 400,     # cap enrichment work
+    max_recent_runup  = 0.30,    # >this 5-day gain = "already ran" -> late bucket (anti-lag)
+    flat_band         = 0.10,    # |5-day move| <= this counts as "price still flat"
 )
 
 # ==========================================================================
@@ -155,11 +157,14 @@ def price_features(df):
     close = df["Close"]; vol = df["Volume"]
     rvol = float(vol.iloc[-3:].mean()) / float(vol.iloc[-23:-3].mean() + 1e-9)
     ret_1m = float(close.iloc[-1] / close.iloc[-21] - 1)
+    ret_5d = float(close.iloc[-1] / close.iloc[-6] - 1) if len(close) >= 6 else 0.0
+    ret_10d = float(close.iloc[-1] / close.iloc[-11] - 1) if len(close) >= 11 else 0.0
     near_high = float(close.iloc[-1] / close.iloc[-252:].max()) if len(close) >= 60 else 0.0
     recent_dd = float(close.iloc[-5:].min() / close.iloc[-6] - 1)  # worst recent dip
     adv = float(vol.iloc[-30:].mean())
-    return dict(rvol=rvol, ret_1m=ret_1m, near_high=near_high,
-                recent_dd=recent_dd, adv=adv, price=float(close.iloc[-1]))
+    return dict(rvol=rvol, ret_1m=ret_1m, ret_5d=ret_5d, ret_10d=ret_10d,
+                near_high=near_high, recent_dd=recent_dd, adv=adv,
+                price=float(close.iloc[-1]))
 
 # ==========================================================================
 # SCORING  (lean EDS v1)
@@ -210,16 +215,26 @@ def score_candidate(c):
 
     # ---- ACCUMULATION: relative volume trend (0-5) ----
     rvol = c.get("rvol")
+    ret_5d = c.get("ret_5d")
+    flat = (ret_5d is not None and abs(ret_5d) <= CFG["flat_band"])
     if rvol:
-        parts["rvol"] = (5 if rvol >= 2 else 3 if rvol >= 1.5 else 1 if rvol >= 1.2 else 0)
-        if rvol >= 1.5: flags.append(f"relative volume {rvol:.1f}x")
+        base = (5 if rvol >= 2 else 3 if rvol >= 1.5 else 1 if rvol >= 1.2 else 0)
+        # the pre-move fingerprint: volume building while price is STILL FLAT.
+        # if price already ran, volume is just the move's exhaust -> heavily discount.
+        if flat:
+            parts["rvol"] = base
+            if rvol >= 1.5:
+                flags.append(f"volume building {rvol:.1f}x while price still flat (accumulation)")
+        else:
+            parts["rvol"] = round(base * 0.3, 1)   # discount late volume
 
-    # ---- PRICE HOLDING / resilience (0-6) ----
-    nh, dd = c.get("near_high"), c.get("recent_dd")
-    if nh is not None:
-        if nh >= 0.98:        parts["price_hold"] = 6; flags.append("at/near 52wk high")
-        elif dd is not None and dd > -0.02 and (ret_1m or 0) >= 0:
-            parts["price_hold"] = 3; flags.append("holding up under pressure")
+    # ---- EARLINESS / resilience (0-5), NOT 'already at highs' ----
+    dd = c.get("recent_dd")
+    if flat and dd is not None and dd <= -0.04 and (ret_5d or 0) >= -0.02:
+        # dipped intraday but closed flat/up = buyers absorbing supply, pre-move
+        parts["resilience"] = 5; flags.append("dips bought / holding support under pressure")
+    elif flat and (ret_1m is not None and -0.05 <= ret_1m <= 0.15):
+        parts["resilience"] = 2; flags.append("coiling — quiet, not extended")
 
     # ---- SOCIAL VELOCITY (0-6) ----
     g, mentions, prev = c.get("soc_growth"), c.get("soc_mentions"), c.get("soc_prev")
@@ -246,6 +261,9 @@ def tier(score):
 def disqualifier_notes(c):
     """Cheap, free disqualifier flags (full checks need filings -> manual)."""
     notes = []
+    if (c.get("ret_5d") or 0) >= CFG["max_recent_runup"]:
+        notes.insert(0, f"⛔ already +{c['ret_5d']*100:.0f}% in 5 days — this IS the move, "
+                        "not the setup. You're late.")
     if (c.get("ret_1m") or 0) >= 0.40:
         notes.append("⚠ already +40% in a month — may be late / chasing")
     sp = c.get("short_pct")
@@ -321,12 +339,14 @@ def run_squeeze(watchlist=None, progress=None):
                 continue
         sc, parts, flags = score_candidate(c)
         c["score"], c["parts"], c["flags"] = sc, parts, flags
+        c["late"] = (c.get("ret_5d") or 0) >= CFG["max_recent_runup"]
         c["tier"] = tier(sc)
         c["disq"] = disqualifier_notes(c)
         results.append(c)
         if progress: progress((i+1)/n)
         time.sleep(0.05)
-    results.sort(key=lambda x: x["score"], reverse=True)
+    # pre-move setups first (not late), then by score; late movers sink to the bottom
+    results.sort(key=lambda x: (x.get("late", False), -x["score"]))
     return results
 
 def to_row(c):
@@ -339,7 +359,9 @@ def to_row(c):
         ShortPctFloat=round(spv,1) if spv is not None else None,
         DaysToCover=c.get("days_cover"),
         RelVol=round(c["rvol"],2) if c.get("rvol") else None,
+        Ret5D_pct=round(c["ret_5d"]*100,1) if c.get("ret_5d") is not None else None,
         Ret1M_pct=round(c["ret_1m"]*100,1) if c.get("ret_1m") is not None else None,
+        Late=("LATE" if c.get("late") else ""),
         Signals="; ".join(c.get("flags", [])),
     )
 

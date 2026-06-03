@@ -176,6 +176,11 @@ if mode == "🔥 Squeeze Radar":
              "strength, relative-volume accumulation, and short-interest fuel.")
     wl_text = st.text_input("Optional: add your own tickers (comma-separated) to always include",
                             "")
+    runup = st.slider("Exclude anything already up more than this in the last 5 days (anti-late)",
+                      10, 100, 30, step=5,
+                      help="Stocks past this 5-day gain are treated as 'already running' and moved "
+                           "to a separate late bucket — the goal is to catch the build, not chase the candle.")
+    SQ.CFG["max_recent_runup"] = runup / 100.0
     if st.button("🔥 Run Squeeze Radar", type="primary"):
         watch = [t.strip().upper() for t in wl_text.replace(" ", ",").split(",") if t.strip()]
         status = st.empty(); bar = st.progress(0.0)
@@ -190,16 +195,16 @@ if mode == "🔥 Squeeze Radar":
         if not res:
             status.warning("No candidates surfaced. Try again shortly, or add tickers above.")
         else:
-            status.success(f"Scored {len(res)} candidates from live leading signals.")
-            rows = [SQ.to_row(c) for c in res]
-            df = pd.DataFrame(rows); df.insert(0, "Rank", range(1, len(df) + 1))
-            st.dataframe(df, use_container_width=True, hide_index=True)
-            st.download_button("⬇ Download CSV", df.to_csv(index=False),
-                               "squeeze_results.csv", "text/csv")
-            st.subheader("Top candidates — signals & checks")
-            for r, c in enumerate(res[:20], 1):
+            prime = [c for c in res if not c.get("late")]
+            late  = [c for c in res if c.get("late")]
+            status.success(f"{len(prime)} PRE-move candidates · {len(late)} already-running (late). "
+                           "Pre-move setups are ranked first.")
+
+            def render(c, r):
                 with st.expander(f"#{r}  {c['ticker']} — Tier {c.get('tier','?')} "
-                                 f"— score {c.get('score',0)}", expanded=(r <= 5)):
+                                 f"— score {c.get('score',0)}"
+                                 + (f" — ▲{c['ret_5d']*100:.0f}% 5d" if c.get('ret_5d') else ""),
+                                 expanded=(r <= 5)):
                     if c.get("flags"):
                         st.markdown("**Leading signals firing:**")
                         for fl in c["flags"]:
@@ -210,6 +215,25 @@ if mode == "🔥 Squeeze Radar":
                         st.markdown("**Checks before acting:**")
                         for d in c["disq"]:
                             st.markdown(f"- {d}")
+
+            st.subheader(f"🎯 Pre-move setups ({len(prime)})")
+            if prime:
+                pf = pd.DataFrame([SQ.to_row(c) for c in prime])
+                pf.insert(0, "Rank", range(1, len(pf) + 1))
+                st.dataframe(pf, use_container_width=True, hide_index=True)
+                st.download_button("⬇ Download pre-move CSV", pf.to_csv(index=False),
+                                   "squeeze_premove.csv", "text/csv")
+                for r, c in enumerate(prime[:20], 1):
+                    render(c, r)
+            else:
+                st.info("No early setups cleared the filter right now. That's normal — "
+                        "true pre-squeeze conditions are rare. Lower the run-up cutoff or check back.")
+
+            if late:
+                with st.expander(f"⛔ Already running — too late ({len(late)}). "
+                                 "Shown for awareness; you'd be chasing.", expanded=False):
+                    lf = pd.DataFrame([SQ.to_row(c) for c in late])
+                    st.dataframe(lf, use_container_width=True, hide_index=True)
     st.caption("Free/live sources: SEC EDGAR, OpenInsider, Apewisdom (WSB), Yahoo Finance. "
                "Short interest is bi-monthly (fuel, not trigger). Borrow-fee / utilization / "
                "options-sweep / dark-pool are not in v1 (need IBKR or a paid feed). "
