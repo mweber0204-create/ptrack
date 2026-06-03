@@ -17,6 +17,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 import ptrack_screener as P
+import squeeze_screener as SQ
 
 st.set_page_config(page_title="P-TRACK Screener", layout="centered",
                    page_icon="📈", initial_sidebar_state="expanded")
@@ -40,7 +41,7 @@ st.markdown("""
 st.sidebar.title("📈 P-TRACK")
 st.sidebar.caption("Bullish technical setup screener")
 
-mode = st.sidebar.radio("Mode", ["Screen for stocks", "Backtest the rules"])
+mode = st.sidebar.radio("Mode", ["🔥 Squeeze Radar", "Screen for stocks", "Backtest the rules"])
 
 universe = st.sidebar.selectbox(
     "Universe",
@@ -166,7 +167,56 @@ def show_logo():
 # ---------------------------------------------------------------- main UI
 st.title("P-TRACK — Bullish Setup Screener")
 
-if mode == "Screen for stocks":
+if mode == "🔥 Squeeze Radar":
+    st.subheader("Squeeze Radar — early-detection (v1)")
+    st.write("Finds stocks **building** short-squeeze pressure using free, *leading* "
+             "signals — not the 2-week-old short-interest lists everyone sees. It seeds "
+             "candidates from recent **SEC 13D/13G filings**, **insider buys**, and "
+             "**WallStreetBets mention velocity**, then scores each on shorts-adding-into-"
+             "strength, relative-volume accumulation, and short-interest fuel.")
+    wl_text = st.text_input("Optional: add your own tickers (comma-separated) to always include",
+                            "")
+    if st.button("🔥 Run Squeeze Radar", type="primary"):
+        watch = [t.strip().upper() for t in wl_text.replace(" ", ",").split(",") if t.strip()]
+        status = st.empty(); bar = st.progress(0.0)
+        status.write("Pulling EDGAR filings, insider buys, WSB velocity, and short-interest…")
+        with st.spinner("Scanning leading signals… (first run can take a minute)"):
+            try:
+                res = SQ.run_squeeze(watch or None, progress=lambda f: bar.progress(min(f, 1.0)))
+            except Exception as e:
+                res = []
+                st.error(f"Data fetch issue: {e}. Try again — free sources sometimes rate-limit.")
+        bar.empty()
+        if not res:
+            status.warning("No candidates surfaced. Try again shortly, or add tickers above.")
+        else:
+            status.success(f"Scored {len(res)} candidates from live leading signals.")
+            rows = [SQ.to_row(c) for c in res]
+            df = pd.DataFrame(rows); df.insert(0, "Rank", range(1, len(df) + 1))
+            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.download_button("⬇ Download CSV", df.to_csv(index=False),
+                               "squeeze_results.csv", "text/csv")
+            st.subheader("Top candidates — signals & checks")
+            for r, c in enumerate(res[:20], 1):
+                with st.expander(f"#{r}  {c['ticker']} — Tier {c.get('tier','?')} "
+                                 f"— score {c.get('score',0)}", expanded=(r <= 5)):
+                    if c.get("flags"):
+                        st.markdown("**Leading signals firing:**")
+                        for fl in c["flags"]:
+                            st.markdown(f"- {fl}")
+                    else:
+                        st.caption("Seeded as a candidate; few confirming signals yet.")
+                    if c.get("disq"):
+                        st.markdown("**Checks before acting:**")
+                        for d in c["disq"]:
+                            st.markdown(f"- {d}")
+    st.caption("Free/live sources: SEC EDGAR, OpenInsider, Apewisdom (WSB), Yahoo Finance. "
+               "Short interest is bi-monthly (fuel, not trigger). Borrow-fee / utilization / "
+               "options-sweep / dark-pool are not in v1 (need IBKR or a paid feed). "
+               "**Not financial advice — squeeze speculation is extremely high risk.**")
+    show_logo()
+
+elif mode == "Screen for stocks":
     st.write("Pick a universe in the sidebar, then run the scan. Every number is "
              "computed from real price/volume data.")
     if st.button("▶ Run screen", type="primary"):
