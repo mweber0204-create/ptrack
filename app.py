@@ -39,7 +39,7 @@ st.markdown("""
 st.sidebar.title("📈 P-TRACK")
 st.sidebar.caption("Bullish technical setup screener")
 
-mode = st.sidebar.radio("Mode", ["Screen for setups", "Backtest the rules"])
+mode = st.sidebar.radio("Mode", ["Screen for stocks", "Backtest the rules"])
 
 universe = st.sidebar.selectbox(
     "Universe",
@@ -165,7 +165,7 @@ def run_backtest(universe, status, bar):
 # ---------------------------------------------------------------- main UI
 st.title("P-TRACK — Bullish Setup Screener")
 
-if mode == "Screen for setups":
+if mode == "Screen for stocks":
     st.write("Pick a universe in the sidebar, then run the scan. Every number is "
              "computed from real price/volume data.")
     if st.button("▶ Run screen", type="primary"):
