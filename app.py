@@ -46,7 +46,7 @@ universe = st.sidebar.selectbox(
     ["sp500", "nasdaq100", "sp1500", "all"],
     help="sp500 is fastest. 'all' scans every US-listed stock (~7000) and is slow.",
 )
-top_n = st.sidebar.slider("How many setups to show", 5, 50, 25, step=5)
+top_n = st.sidebar.slider("How many stocks to show by order of strength", 5, 50, 25, step=5)
 balance = st.sidebar.checkbox("Sector-balance the list", value=False)
 max_per_sector = st.sidebar.slider("Max picks per sector", 1, 8, 3,
                                    disabled=not balance)
