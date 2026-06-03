@@ -46,10 +46,7 @@ universe = st.sidebar.selectbox(
     ["sp500", "nasdaq100", "sp1500", "all"],
     help="sp500 is fastest. 'all' scans every US-listed stock (~7000) and is slow.",
 )
-top_n = st.sidebar.slider("How many stocks to show by order of strength", 5, 50, 25, step=5)
-balance = st.sidebar.checkbox("Sector-balance the list", value=False)
-max_per_sector = st.sidebar.slider("Max picks per sector", 1, 8, 3,
-                                   disabled=not balance)
+top_n = st.sidebar.slider("How many stocks to show (strongest first)", 5, 50, 25, step=5)
 
 # ---- Profitability levers (apply to BOTH screening and backtest) ----
 with st.sidebar.expander("⚙️ Edge filters (advanced)"):
@@ -62,6 +59,8 @@ with st.sidebar.expander("⚙️ Edge filters (advanced)"):
                                 help="Skips long setups during weak markets.")
     min_score = st.slider("Minimum setup score", 0, 90, 0, step=5,
                           help="Only take setups scoring at least this. 0 = no cutoff.")
+    st.caption("(Each stock is graded 0–100 on overall strength — this hides "
+               "anything below your number. 0 = show all.)")
     min_rr = st.slider("Minimum reward-to-risk", 0.0, 3.0, 0.0, step=0.25,
                        help="Hide setups whose target is too close to the stop. "
                             "0 = show all. Try 1.5. Note: with the standard stop, "
@@ -104,7 +103,7 @@ def load_spy():
 def get_universe(spec):
     return P.load_universe(spec)
 
-def run_scan(universe, top_n, balance, max_per_sector, status, bar):
+def run_scan(universe, top_n, status, bar):
     spy = load_spy()
     tickers = get_universe(universe)
     status.write(f"Universe **{universe}** — {len(tickers)} symbols. Downloading…")
@@ -129,14 +128,9 @@ def run_scan(universe, top_n, balance, max_per_sector, status, bar):
         bar.progress((bi + 1) / nb)
         time.sleep(0.3)
     results.sort(key=lambda x: x["score"], reverse=True)
-    if balance:
-        for m in results:
-            m["sector"] = P.fetch_sector(m["ticker"])
-        top = P.sector_balanced_select(results, top_n, max_per_sector)
-    else:
-        for m in results:
-            m.setdefault("sector", "")
-        top = results[:top_n]
+    for m in results:
+        m.setdefault("sector", "")
+    top = results[:top_n]
     return results, top
 
 def run_backtest(universe, status, bar):
@@ -172,7 +166,7 @@ if mode == "Screen for stocks":
         status = st.empty()
         bar = st.progress(0.0)
         with st.spinner("Scanning…"):
-            results, top = run_scan(universe, top_n, balance, max_per_sector, status, bar)
+            results, top = run_scan(universe, top_n, status, bar)
         bar.empty()
         status.success(f"{len(results)} stocks passed all filters. Showing top {len(top)}.")
 
