@@ -553,7 +553,7 @@ def chart_svg(df, m, bars=170, W=900, Hp=300, Hv=90):
     sub-panel -- all as a standalone <svg> string."""
     d = df.iloc[-bars:].copy()
     n = len(d)
-    pad_l, pad_r, pad_t, pad_b = 55, 70, 10, 16
+    pad_l, pad_r, pad_t, pad_b = 58, 92, 10, 18
     plot_w = W - pad_l - pad_r
     price_vals = pd.concat([d["High"], d["Low"], d["SMA200"].fillna(d["Low"])]).values
     refs = [m["breakout"], m["support"], m["stop"], m["target"]]
@@ -576,7 +576,7 @@ def chart_svg(df, m, bars=170, W=900, Hp=300, Hv=90):
         return f'<polyline fill="none" stroke="{color}" stroke-width="{wdt}"{da} points="{" ".join(pts)}"/>'
 
     svg = [f'<svg viewBox="0 0 {W} {Hp+Hv+pad_t+pad_b+24}" xmlns="http://www.w3.org/2000/svg" '
-           f'font-family="Arial,Helvetica,sans-serif" font-size="11">']
+           f'font-family="Arial,Helvetica,sans-serif" font-size="14">']
     svg.append(f'<rect x="0" y="0" width="{W}" height="{Hp+Hv+pad_t+pad_b+24}" fill="#ffffff"/>')
     # price gridlines + labels
     for k in range(5):

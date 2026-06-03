@@ -17,11 +17,29 @@ import streamlit.components.v1 as components
 
 import ptrack_screener as P
 
-st.set_page_config(page_title="P-TRACK Screener", layout="wide", page_icon="📈")
+st.set_page_config(page_title="P-TRACK Screener", layout="centered",
+                   page_icon="📈", initial_sidebar_state="expanded")
+
+# Phone-friendly styling: full-width buttons, comfortable text, tighter margins.
+st.markdown("""
+<style>
+  .block-container {padding-top: 1.2rem; padding-bottom: 3rem; max-width: 860px;}
+  .stButton > button, .stDownloadButton > button {
+      width: 100%; padding: 0.7rem 1rem; font-size: 1.05rem; border-radius: 10px;}
+  html, body, [class*="css"] {font-size: 1.02rem;}
+  div[data-testid="stDataFrame"] {overflow-x: auto;}
+  @media (max-width: 640px) {
+      h1 {font-size: 1.5rem;}
+      .block-container {padding-left: 0.8rem; padding-right: 0.8rem;}
+  }
+</style>
+""", unsafe_allow_html=True)
 
 # ---------------------------------------------------------------- sidebar
 st.sidebar.title("📈 P-TRACK")
 st.sidebar.caption("Bullish technical setup screener")
+st.caption("📱 On a phone? Tap the **»** arrow at the top-left to open the "
+           "controls, pick a universe, then come back and tap **Run**.")
 
 mode = st.sidebar.radio("Mode", ["Screen for setups", "Backtest the rules"])
 
@@ -147,7 +165,7 @@ if mode == "Screen for setups":
                 with st.expander(f"#{r}  {m['ticker']} — {m['pattern']} — "
                                  f"${m['price']:.2f} — score {m['score']}/100{sec}",
                                  expanded=(r <= 3)):
-                    components.html(P.chart_svg(m["_df"], m), height=470)
+                    components.html(P.chart_svg(m["_df"], m), height=430, scrolling=False)
                     c1, c2, c3 = st.columns(3)
                     c1.metric("Breakout", f"{m['breakout']:.2f}",
                               f"{m['dist_to_breakout']*100:+.1f}% away")
