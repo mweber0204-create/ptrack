@@ -68,8 +68,6 @@ with st.sidebar.expander("⚙️ Edge filters (advanced)"):
     tight_stop = st.checkbox("Use tighter stop (just under support)",
                              help="Smaller risk = higher reward-to-risk, but the stop "
                                   "is easier to hit. Test it in Backtest mode before trusting it.")
-    vcp_bonus = st.slider("VCP ranking bonus", 0, 20, 0, step=2,
-                          help="Pushes VCP setups higher in the list.")
 
 # push the chosen levers into the engine config
 if pattern_choice == "VCP only":
@@ -83,7 +81,6 @@ P.CFG["require_market_uptrend"] = market_filter
 P.CFG["min_score"] = float(min_score)
 P.CFG["min_rr"] = float(min_rr)
 P.CFG["tight_stop"] = tight_stop
-P.CFG["vcp_score_bonus"] = float(vcp_bonus)
 
 st.sidebar.markdown("---")
 st.sidebar.caption("Not financial advice. Rule-based pattern detection on "
