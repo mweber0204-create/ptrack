@@ -164,6 +164,36 @@ def show_logo():
         with c2:
             st.image(LOGO_PATH, use_container_width=True)
 
+def render_squeeze_candidate(c, header, expanded=True):
+    """Shared display for one squeeze candidate (used by scan + single analyzer)."""
+    cov = c.get("coverage")
+    with st.expander(header, expanded=expanded):
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Squeeze score", f"{c.get('score',0)}/100", c.get("tier","").split(" — ")[-1])
+        m2.metric("Data coverage", f"{cov*100:.0f}%" if cov is not None else "—")
+        m3.metric("5-day move", f"{c['ret_5d']*100:+.0f}%" if c.get("ret_5d") is not None else "—",
+                  "LATE" if c.get("late") else "")
+        if c.get("flags"):
+            st.markdown("**Leading signals firing:**")
+            for fl in c["flags"]:
+                st.markdown(f"- {fl}")
+        if c.get("breakdown"):
+            st.markdown("**Weighted model (your 8 indicators):**")
+            bd = pd.DataFrame([
+                {"Indicator": b["indicator"], "Weight": b["weight"],
+                 "Band": ({0.25:"Low",0.5:"Med",0.75:"High",1.0:"Extreme"}.get(b["frac"], "—")
+                          if b["frac"] is not None else "not measured"),
+                 "Points": (b["contribution"] if b["contribution"] is not None else "—")}
+                for b in c["breakdown"]])
+            st.dataframe(bd, use_container_width=True, hide_index=True)
+            if cov is not None and cov < 0.99:
+                st.caption(f"⚠ Score normalized over the {cov*100:.0f}% of model weight measurable "
+                           "for free. Cost-to-Borrow + Utilization (38%) need IBKR/Fintel/Ortex.")
+        if c.get("disq"):
+            st.markdown("**Checks before acting:**")
+            for d in c["disq"]:
+                st.markdown(f"- {d}")
+
 # ---------------------------------------------------------------- main UI
 st.title("P-TRACK — Bullish Setup Screener")
 
@@ -174,6 +204,30 @@ if mode == "🔥 Squeeze Radar":
              "candidates from recent **SEC 13D/13G filings**, **insider buys**, and "
              "**WallStreetBets mention velocity**, then scores each on shorts-adding-into-"
              "strength, relative-volume accumulation, and short-interest fuel.")
+    # ---------- analyze one specific stock on demand ----------
+    with st.container(border=True):
+        st.markdown("#### 🔎 Analyze a specific stock")
+        ac1, ac2 = st.columns([3, 1])
+        sym = ac1.text_input("Ticker symbol", placeholder="e.g. GME", label_visibility="collapsed")
+        go = ac2.button("Analyze", use_container_width=True)
+        with st.expander("Have Cost-to-Borrow / Utilization? (optional, lifts coverage)"):
+            mc1, mc2 = st.columns(2)
+            man_ctb = mc1.number_input("Cost to Borrow %", min_value=0.0, value=0.0, step=1.0)
+            man_util = mc2.number_input("Utilization %", min_value=0.0, max_value=100.0, value=0.0, step=1.0)
+        if go and sym.strip():
+            with st.spinner(f"Analyzing {sym.upper().strip()}…"):
+                try:
+                    one = SQ.analyze_ticker(sym, ctb=(man_ctb or None), util=(man_util or None))
+                except Exception as e:
+                    one = None; st.error(f"Couldn't analyze: {e}")
+            if one and one.get("ok"):
+                render_squeeze_candidate(
+                    one, f"{one['ticker']} — Tier {one.get('tier','?')} — "
+                         f"score {one.get('score',0)}/100", expanded=True)
+            elif one:
+                st.warning(f"No price data for '{sym.upper().strip()}' — check the symbol.")
+
+    st.markdown("#### 📡 Scan the market for setups")
     wl_text = st.text_input("Optional: add your own tickers (comma-separated) to always include",
                             "")
     runup = st.slider("Exclude anything already up more than this in the last 5 days (anti-late)",
@@ -201,20 +255,11 @@ if mode == "🔥 Squeeze Radar":
                            "Pre-move setups are ranked first.")
 
             def render(c, r):
-                with st.expander(f"#{r}  {c['ticker']} — Tier {c.get('tier','?')} "
-                                 f"— score {c.get('score',0)}"
-                                 + (f" — ▲{c['ret_5d']*100:.0f}% 5d" if c.get('ret_5d') else ""),
-                                 expanded=(r <= 5)):
-                    if c.get("flags"):
-                        st.markdown("**Leading signals firing:**")
-                        for fl in c["flags"]:
-                            st.markdown(f"- {fl}")
-                    else:
-                        st.caption("Seeded as a candidate; few confirming signals yet.")
-                    if c.get("disq"):
-                        st.markdown("**Checks before acting:**")
-                        for d in c["disq"]:
-                            st.markdown(f"- {d}")
+                render_squeeze_candidate(
+                    c, f"#{r}  {c['ticker']} — Tier {c.get('tier','?')} — "
+                       f"score {c.get('score',0)}/100"
+                       + (f" — ▲{c['ret_5d']*100:.0f}% 5d" if c.get('ret_5d') else ""),
+                    expanded=(r <= 5))
 
             st.subheader(f"🎯 Pre-move setups ({len(prime)})")
             if prime:

@@ -150,6 +150,25 @@ def get_si_info(tkr):
         name        = info.get("shortName") or info.get("longName") or tkr,
     )
 
+def get_options_pc(tkr):
+    """Approximate options 'call flow' via put/call OPEN-INTEREST ratio across the
+    nearest 1-2 expiries (free from yfinance). Lower ratio = more call-heavy.
+    Not real-time sweep data, but a free directional proxy."""
+    import yfinance as yf
+    try:
+        t = yf.Ticker(tkr)
+        exps = list(t.options or [])[:2]
+        calls_oi = puts_oi = 0
+        for e in exps:
+            ch = t.option_chain(e)
+            calls_oi += float(ch.calls["openInterest"].fillna(0).sum())
+            puts_oi  += float(ch.puts["openInterest"].fillna(0).sum())
+        if calls_oi <= 0:
+            return None
+        return round(puts_oi / calls_oi, 3)
+    except Exception:
+        return None
+
 def price_features(df):
     """relative volume, recent return, price-holding from a daily OHLCV frame."""
     if df is None or len(df) < 40:
@@ -167,7 +186,88 @@ def price_features(df):
                 price=float(close.iloc[-1]))
 
 # ==========================================================================
-# SCORING  (lean EDS v1)
+# WEIGHTED MODEL  (user's 8-indicator framework, exact weights & thresholds)
+# ==========================================================================
+WEIGHTS = {  # must sum to 100
+    "SI%": 22, "CTB": 20, "UTIL": 18, "DTC": 12,
+    "CALLS": 12, "SOCIAL": 8, "FLOAT": 5, "CHART": 3,
+}
+# band -> fraction of that indicator's weight earned
+_BAND = {"low": 0.25, "med": 0.50, "high": 0.75, "extreme": 1.0}
+
+def _band_frac(value, lo, med, hi):
+    """Return fraction for ascending thresholds: <lo=low, <med=med, <hi=high, else extreme."""
+    if value is None:
+        return None
+    if value < lo:   return _BAND["low"]
+    if value < med:  return _BAND["med"]
+    if value < hi:   return _BAND["high"]
+    return _BAND["extreme"]
+
+def _indicator_fracs(c):
+    """Return {indicator: fraction or None} per the framework thresholds."""
+    f = {}
+    # SI % of float (normalize 0-1 vs 0-100)
+    sp = c.get("short_pct")
+    spv = (sp*100 if (sp is not None and sp <= 1.5) else sp) if sp is not None else None
+    f["SI%"]  = _band_frac(spv, 15, 30, 50)
+    # Cost to borrow (annualized %) -- only if supplied (IBKR/manual)
+    f["CTB"]  = _band_frac(c.get("ctb"), 10, 50, 150)
+    # Utilization (%) -- only if supplied
+    f["UTIL"] = _band_frac(c.get("util"), 50, 80, 95)
+    # Days to cover
+    f["DTC"]  = _band_frac(c.get("days_cover"), 3, 5, 10)
+    # Options: lower put/call ratio = more call-heavy = higher band (descending)
+    pc = c.get("pc_ratio")
+    if pc is None:
+        f["CALLS"] = None
+    else:
+        f["CALLS"] = (_BAND["extreme"] if pc < 0.4 else _BAND["high"] if pc < 0.6
+                      else _BAND["med"] if pc < 0.8 else _BAND["low"])
+    # Social velocity (we always check the WSB feed -> absence = baseline 'low')
+    if c.get("soc_prev") in (None,) and c.get("soc_mentions"):
+        f["SOCIAL"] = _BAND["high"]                      # first appearance from zero
+    elif c.get("soc_growth"):
+        g = c["soc_growth"]
+        f["SOCIAL"] = (_BAND["extreme"] if g >= 20 else _BAND["high"] if g >= 5
+                       else _BAND["med"] if g >= 2 else _BAND["low"])
+    else:
+        f["SOCIAL"] = _BAND["low"]                        # baseline, not trending
+    # Float size (smaller = higher band) -- descending in shares
+    fl = c.get("float_shares")
+    if fl is None:
+        f["FLOAT"] = None
+    else:
+        m = fl/1e6
+        f["FLOAT"] = (_BAND["extreme"] if m < 10 else _BAND["high"] if m < 50
+                      else _BAND["med"] if m < 200 else _BAND["low"])
+    # Chart break (from near-high + relative volume)
+    nh, rv = c.get("near_high"), c.get("rvol")
+    if nh is None:
+        f["CHART"] = None
+    elif nh >= 1.0 and (rv or 0) >= 1.5: f["CHART"] = _BAND["extreme"]
+    elif nh >= 0.98:                     f["CHART"] = _BAND["high"]
+    elif nh >= 0.90:                     f["CHART"] = _BAND["med"]
+    else:                                f["CHART"] = _BAND["low"]
+    return f
+
+def score_weighted(c):
+    """0-100 weighted score, re-normalized over the indicators we could measure.
+    Returns (score, breakdown_list, coverage_fraction)."""
+    fr = _indicator_fracs(c)
+    measured_w = sum(WEIGHTS[k] for k, v in fr.items() if v is not None)
+    earned = sum(WEIGHTS[k] * v for k, v in fr.items() if v is not None)
+    score = round((earned / measured_w) * 100, 1) if measured_w else 0.0
+    coverage = measured_w / 100.0
+    breakdown = []
+    for k in WEIGHTS:
+        v = fr[k]
+        breakdown.append(dict(indicator=k, weight=WEIGHTS[k], frac=v,
+                              contribution=(round(WEIGHTS[k]*v, 1) if v is not None else None)))
+    return score, breakdown, coverage
+
+# ==========================================================================
+# DESCRIPTIVE FLAGS  (human-readable; not the ranking score)
 # ==========================================================================
 def score_candidate(c):
     """c is a merged dict of signals. Returns (score, parts, flags)."""
@@ -252,10 +352,10 @@ def score_candidate(c):
     return round(score, 1), parts, flags
 
 def tier(score):
-    # thresholds calibrated for the v1 signal subset (max ~46 in practice)
-    return ("A — PRIME" if score >= 28 else
-            "B — BUILDING" if score >= 18 else
-            "C — WATCHLIST" if score >= 9 else
+    # weighted model is a true 0-100 scale
+    return ("A — PRIME" if score >= 75 else
+            "B — BUILDING" if score >= 55 else
+            "C — WATCHLIST" if score >= 35 else
             "D — SKIP")
 
 def disqualifier_notes(c):
@@ -329,18 +429,23 @@ def run_squeeze(watchlist=None, progress=None):
             except Exception: df = None
         pf = price_features(df.dropna() if df is not None else None)
         if pf: c.update(pf)
-        # SI fundamentals
+        # SI fundamentals + options put/call proxy
         c.update({k: v for k, v in get_si_info(tk).items() if v is not None})
+        pc = get_options_pc(tk)
+        if pc is not None: c["pc_ratio"] = pc
         # filters
         if CFG["require_si_fuel"] and c.get("short_pct") is not None:
             spv = c["short_pct"]*100 if c["short_pct"] <= 1.5 else c["short_pct"]
             if spv < CFG["min_si_pct"]*100:
                 if progress: progress((i+1)/n)
                 continue
-        sc, parts, flags = score_candidate(c)
-        c["score"], c["parts"], c["flags"] = sc, parts, flags
+        # WEIGHTED model score (authoritative) + descriptive flags
+        score, breakdown, coverage = score_weighted(c)
+        _, parts, flags = score_candidate(c)
+        c["score"], c["breakdown"], c["coverage"] = score, breakdown, coverage
+        c["parts"], c["flags"] = parts, flags
         c["late"] = (c.get("ret_5d") or 0) >= CFG["max_recent_runup"]
-        c["tier"] = tier(sc)
+        c["tier"] = tier(score)
         c["disq"] = disqualifier_notes(c)
         results.append(c)
         if progress: progress((i+1)/n)
@@ -349,15 +454,64 @@ def run_squeeze(watchlist=None, progress=None):
     results.sort(key=lambda x: (x.get("late", False), -x["score"]))
     return results
 
+def analyze_ticker(tkr, ctb=None, util=None):
+    """Run the full weighted model on ONE symbol on demand (works even if the
+    leading-signal feeds didn't surface it). ctb/util can be passed manually
+    (e.g. from Fintel/IBKR) to lift data coverage toward 100%."""
+    import yfinance as yf
+    tk = str(tkr).upper().strip()
+    c = {"ticker": tk}
+    if ctb is not None:  c["ctb"] = float(ctb)
+    if util is not None: c["util"] = float(util)
+    # price history
+    df = None
+    try:
+        df = yf.download(tk, period="1y", auto_adjust=False, progress=False)
+        if df is not None and isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+    except Exception:
+        df = None
+    pf = price_features(df.dropna() if df is not None else None)
+    if pf: c.update(pf)
+    # short interest / float + options proxy
+    c.update({k: v for k, v in get_si_info(tk).items() if v is not None})
+    pc = get_options_pc(tk)
+    if pc is not None: c["pc_ratio"] = pc
+    # cross-reference the free leading-signal feeds (best-effort)
+    try:
+        a = fetch_apewisdom().get(tk)
+        if a: c["soc_mentions"]=a["mentions"]; c["soc_prev"]=a["prev"]; c["soc_growth"]=a["growth"]
+    except Exception: pass
+    try:
+        v = fetch_openinsider_buys().get(tk)
+        if v: c["insider_buy_$"] = v
+    except Exception: pass
+    try:
+        f = fetch_edgar_activist(CFG["edgar_lookback_d"]).get(tk)
+        if f: c["edgar_form"] = f
+    except Exception: pass
+    # score
+    score, breakdown, coverage = score_weighted(c)
+    _, parts, flags = score_candidate(c)
+    c["score"], c["breakdown"], c["coverage"] = score, breakdown, coverage
+    c["parts"], c["flags"] = parts, flags
+    c["late"] = (c.get("ret_5d") or 0) >= CFG["max_recent_runup"]
+    c["tier"] = tier(score)
+    c["disq"] = disqualifier_notes(c)
+    c["ok"] = bool(pf)            # did we get price data?
+    return c
+
 def to_row(c):
     sp = c.get("short_pct")
     spv = (sp*100 if (sp is not None and sp <= 1.5) else sp) if sp is not None else None
     return dict(
         Ticker=c["ticker"], Name=(c.get("name") or "")[:28],
         Score=c.get("score"), Tier=c.get("tier"),
+        Coverage_pct=round(c["coverage"]*100) if c.get("coverage") is not None else None,
         Price=round(c["price"],2) if c.get("price") else None,
         ShortPctFloat=round(spv,1) if spv is not None else None,
         DaysToCover=c.get("days_cover"),
+        PutCall=c.get("pc_ratio"),
         RelVol=round(c["rvol"],2) if c.get("rvol") else None,
         Ret5D_pct=round(c["ret_5d"]*100,1) if c.get("ret_5d") is not None else None,
         Ret1M_pct=round(c["ret_1m"]*100,1) if c.get("ret_1m") is not None else None,
