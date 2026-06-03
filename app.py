@@ -53,6 +53,26 @@ balance = st.sidebar.checkbox("Sector-balance the list", value=False)
 max_per_sector = st.sidebar.slider("Max picks per sector", 1, 8, 3,
                                    disabled=not balance)
 
+# ---- Profitability levers (apply to BOTH screening and backtest) ----
+with st.sidebar.expander("⚙️ Edge filters (advanced)"):
+    st.caption("Tilt toward what the backtest showed works. All off = original rules.")
+    only_winners = st.checkbox("Trade only the proven patterns",
+                               help="VCP, Flat Base, Cup & Handle. Drops Ascending "
+                                    "Triangle & Bull Flag, which lost money historically.")
+    market_filter = st.checkbox("Only when market (SPY) is above its 200-day",
+                                help="Skips long setups during weak markets.")
+    min_score = st.slider("Minimum setup score", 0, 90, 0, step=5,
+                          help="Only take setups scoring at least this. 0 = no cutoff.")
+    vcp_bonus = st.slider("VCP ranking bonus", 0, 20, 0, step=2,
+                          help="Pushes VCP setups higher in the list.")
+
+# push the chosen levers into the engine config
+P.CFG["allowed_patterns"] = ({"Volatility Contraction Pattern (VCP)", "Flat Base",
+                              "Cup and Handle"} if only_winners else None)
+P.CFG["require_market_uptrend"] = market_filter
+P.CFG["min_score"] = float(min_score)
+P.CFG["vcp_score_bonus"] = float(vcp_bonus)
+
 st.sidebar.markdown("---")
 st.sidebar.caption("Not financial advice. Rule-based pattern detection on "
                    "historical data; breakouts can fail. Verify on your own "
@@ -179,6 +199,18 @@ else:  # Backtest
              "(point-in-time detection, enter on breakout, exit at target/stop/time-stop).")
     step = st.slider("Thoroughness (lower = more trades, slower)", 1, 10, 5)
     P.CFG["bt_step"] = step
+    with st.expander("💵 Realistic costs & exit (optional)"):
+        slp = st.slider("Slippage on entry (%)", 0.0, 1.0, 0.0, step=0.05,
+                        help="Real breakout fills come in a bit high. 0.2–0.3% is typical.")
+        costr = st.slider("Round-trip cost (in R)", 0.0, 0.20, 0.0, step=0.01,
+                          help="Commissions/spread expressed as a fraction of your risk.")
+        be = st.checkbox("Move stop to breakeven after +1R",
+                         help="Locks in no-loss once a trade is up 1R. Fewer losers, "
+                              "but also caps some winners that pull back first.")
+    P.CFG["bt_slippage_pct"] = slp / 100.0
+    P.CFG["bt_cost_R"] = costr
+    P.CFG["bt_breakeven_after_1R"] = be
+    st.caption("The **Edge filters** in the sidebar (pattern/market/score) also apply here.")
     if st.button("▶ Run backtest", type="primary"):
         status = st.empty()
         bar = st.progress(0.0)

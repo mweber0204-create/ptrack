@@ -114,7 +114,19 @@ CFG = dict(
     bt_hold_days           = 40,     # max bars to hold a triggered trade
     bt_step                = 5,      # evaluate the tape every N bars (speed/coverage)
     bt_min_history         = 260,    # bars required before first evaluation
+    # --- PROFITABILITY LEVERS (all OFF by default = original spec) ----------
+    allowed_patterns       = None,   # None = trade all; or a set() of names to keep
+    vcp_score_bonus        = 0.0,    # add this to the score for VCP setups
+    require_market_uptrend = False,  # only take setups when SPY > its own 200d SMA
+    min_score              = 0.0,    # screen/backtest: ignore setups below this score
+    bt_slippage_pct        = 0.0,    # extra % paid above entry to model slippage
+    bt_cost_R              = 0.0,    # fixed round-trip cost per trade, in R
+    bt_breakeven_after_1R  = False,  # once +1R, move stop to entry (lock breakeven)
 )
+
+# Canonical pattern names (use these in allowed_patterns)
+PATTERNS = ["Flat Base", "Bull Flag", "Ascending Triangle", "Cup and Handle",
+            "Volatility Contraction Pattern (VCP)", "High-Tight Flag"]
 
 # --------------------------------------------------------------------------
 # UNIVERSE BUILDERS
@@ -391,6 +403,10 @@ def score_setup(m):
     st = np.clip((m["touches"] - 2) / 3, 0, 1) * 5
     parts["structure"] = st
 
+    # Optional bonus for the historically strongest pattern (VCP)
+    if m.get("pattern") == "Volatility Contraction Pattern (VCP)" and CFG["vcp_score_bonus"]:
+        parts["vcp_bonus"] = float(CFG["vcp_score_bonus"])
+
     s = sum(parts.values())
     return round(min(100, s), 1), parts
 
@@ -404,6 +420,12 @@ def evaluate(df, spy, tkr, name):
     sma20, sma50, sma200 = float(last["SMA20"]), float(last["SMA50"]), float(last["SMA200"])
     if any(map(lambda v: v != v, [sma20, sma50, sma200])):
         return None, "insufficient MA history"
+
+    # ---- MARKET-REGIME FILTER (optional) ----
+    if CFG["require_market_uptrend"]:
+        spy_sma200 = float(spy["Close"].rolling(200).mean().iloc[-1])
+        if spy_sma200 == spy_sma200 and float(spy["Close"].iloc[-1]) <= spy_sma200:
+            return None, "market below its 200d (regime filter)"
 
     # ---- HARD TREND FILTERS ----
     if price <= sma50:                       return None, "below 50d SMA"
@@ -440,6 +462,10 @@ def evaluate(df, spy, tkr, name):
 
     pattern, pole = classify_pattern(df, base)
 
+    # ---- PATTERN ALLOW-LIST (optional) ----
+    if CFG["allowed_patterns"] and pattern not in CFG["allowed_patterns"]:
+        return None, f"pattern '{pattern}' excluded by filter"
+
     # ---- ENTRY / RISK MODEL ----
     breakout = base["base_high"]
     entry    = breakout * (1 + CFG["breakout_entry_buffer"])
@@ -472,6 +498,11 @@ def evaluate(df, spy, tkr, name):
         base_vol=base["base_vol"], prior_vol=base["prior_vol"],
     )
     m["score"], m["parts"] = score_setup(m)
+
+    # ---- MIN-SCORE SELECTIVITY (optional) ----
+    if CFG["min_score"] and m["score"] < CFG["min_score"]:
+        return None, f"score {m['score']} below min {CFG['min_score']}"
+
     return m, "ok"
 
 # --------------------------------------------------------------------------
@@ -705,7 +736,8 @@ def backtest_ticker(df, spy):
         if m is None or m["rr"] <= 0:
             t += CFG["bt_step"]; continue
 
-        entry = m["breakout"] * (1 + CFG["breakout_entry_buffer"])
+        # entry includes the breakout buffer plus optional slippage
+        entry = m["breakout"] * (1 + CFG["breakout_entry_buffer"] + CFG["bt_slippage_pct"])
         stop, target = m["stop"], m["target"]
         risk = entry - stop
         if risk <= 0:
@@ -720,17 +752,22 @@ def backtest_ticker(df, spy):
             t += CFG["bt_step"]; continue
 
         # manage the trade forward
+        cur_stop = stop
         r, exit_k = None, None
         for j in range(trig, min(trig + hold, n)):
             lo, hi = float(df["Low"].iloc[j]), float(df["High"].iloc[j])
-            if lo <= stop:                         # stop first (conservative)
-                r = (stop - entry) / risk; exit_k = j; break
+            if lo <= cur_stop:                     # stop first (conservative)
+                r = (cur_stop - entry) / risk; exit_k = j; break
             if hi >= target:
                 r = (target - entry) / risk; exit_k = j; break
+            # optional: once the trade is up +1R, lift the stop to breakeven
+            if CFG["bt_breakeven_after_1R"] and hi >= entry + risk:
+                cur_stop = max(cur_stop, entry)
         if r is None:                              # time stop at last close
             exit_k = min(trig + hold, n) - 1
             r = (float(df["Close"].iloc[exit_k]) - entry) / risk
-        trades.append((r, exit_k - trig, m["pattern"]))
+        r -= CFG["bt_cost_R"]                       # subtract round-trip cost
+        trades.append((r, exit_k - trig, m["pattern"], m["score"]))
         t = exit_k + CFG["bt_step"]                # resume after the trade closes
     return trades
 
@@ -745,11 +782,32 @@ def run_backtest(all_trades):
     holds = np.array([t[1] for t in all_trades], float)
     # per-pattern breakdown
     pats = {}
-    for r, h, p in all_trades:
-        pats.setdefault(p, []).append(r)
+    for tr in all_trades:
+        pats.setdefault(tr[2], []).append(tr[0])
+    # per-score-bucket breakdown (score is the 4th item when present)
+    buckets = {"<50": [], "50-59": [], "60-69": [], "70-79": [], "80+": []}
+    have_scores = all(len(tr) >= 4 for tr in all_trades)
+    if have_scores:
+        for tr in all_trades:
+            sc = tr[3]
+            key = ("80+" if sc >= 80 else "70-79" if sc >= 70 else
+                   "60-69" if sc >= 60 else "50-59" if sc >= 50 else "<50")
+            buckets[key].append(tr[0])
+
+    # which optional levers were active (for the header)
+    flags = []
+    if CFG["allowed_patterns"]:        flags.append(f"patterns={sorted(CFG['allowed_patterns'])}")
+    if CFG["require_market_uptrend"]:  flags.append("market>200d")
+    if CFG["min_score"]:               flags.append(f"min_score={CFG['min_score']}")
+    if CFG["bt_slippage_pct"]:         flags.append(f"slippage={CFG['bt_slippage_pct']*100:.2f}%")
+    if CFG["bt_cost_R"]:               flags.append(f"cost={CFG['bt_cost_R']}R")
+    if CFG["bt_breakeven_after_1R"]:   flags.append("breakeven@1R")
+
     lines = []
     lines.append("P-TRACK BACKTEST — historical edge of the breakout rules")
     lines.append("=" * 64)
+    if flags:
+        lines.append("Active levers       : " + "; ".join(flags))
     lines.append(f"Trades simulated     : {len(rs)}")
     lines.append(f"Win rate             : {win_rate*100:.1f}%")
     lines.append(f"Expectancy / trade   : {expectancy:+.2f} R")
@@ -764,10 +822,17 @@ def run_backtest(all_trades):
     for p, arr in sorted(pats.items(), key=lambda kv: -len(kv[1])):
         a = np.array(arr)
         lines.append(f"  {p:42s} n={len(a):4d}  win={100*np.mean(a>0):4.0f}%  exp={a.mean():+.2f}R")
+    if have_scores:
+        lines.append("")
+        lines.append("By setup score:")
+        for k in ["<50", "50-59", "60-69", "70-79", "80+"]:
+            a = np.array(buckets[k])
+            if len(a):
+                lines.append(f"  {k:7s} n={len(a):4d}  win={100*np.mean(a>0):4.0f}%  exp={a.mean():+.2f}R")
     lines.append("")
     lines.append("Interpretation: expectancy > 0 and profit factor > 1 imply a positive")
-    lines.append("historical edge for entering these setups on breakout, BEFORE costs/slippage.")
-    lines.append("Past behavior does not guarantee future results.")
+    lines.append("historical edge for these setups. Results now reflect any active levers")
+    lines.append("above. Past behavior does not guarantee future results.")
     return "\n".join(lines)
 
 # --------------------------------------------------------------------------
@@ -788,9 +853,36 @@ def main():
     ap.add_argument("--backtest-step", type=int, default=None, help="evaluate the tape every N bars")
     ap.add_argument("--bt-report", default="ptrack_backtest.txt")
     ap.add_argument("--batch", type=int, default=200, help="download batch size")
+    # --- profitability levers (optional) ---
+    ap.add_argument("--patterns", default=None,
+                    help="comma-separated patterns to trade, e.g. 'VCP,Flat Base,Cup and Handle'")
+    ap.add_argument("--vcp-bonus", type=float, default=0.0, help="add to score for VCP setups")
+    ap.add_argument("--market-filter", action="store_true",
+                    help="only take setups when SPY is above its 200d SMA")
+    ap.add_argument("--min-score", type=float, default=0.0, help="ignore setups below this score")
+    ap.add_argument("--slippage", type=float, default=0.0,
+                    help="backtest slippage as a fraction, e.g. 0.003 = 0.3%%")
+    ap.add_argument("--cost-r", type=float, default=0.0, help="backtest round-trip cost in R")
+    ap.add_argument("--breakeven", action="store_true",
+                    help="backtest: move stop to breakeven once +1R")
     args = ap.parse_args()
     if args.backtest_step:
         CFG["bt_step"] = args.backtest_step
+    # apply levers (accepts 'VCP' as a shorthand for the full VCP name)
+    if args.patterns:
+        names = []
+        for p in args.patterns.split(","):
+            p = p.strip()
+            if p.upper() == "VCP":
+                p = "Volatility Contraction Pattern (VCP)"
+            names.append(p)
+        CFG["allowed_patterns"] = set(names)
+    CFG["vcp_score_bonus"]        = args.vcp_bonus
+    CFG["require_market_uptrend"] = args.market_filter
+    CFG["min_score"]              = args.min_score
+    CFG["bt_slippage_pct"]        = args.slippage
+    CFG["bt_cost_R"]              = args.cost_r
+    CFG["bt_breakeven_after_1R"]  = args.breakeven
 
     print(f"[1/4] Building universe: {args.universe}")
     tickers = load_universe(args.universe)
