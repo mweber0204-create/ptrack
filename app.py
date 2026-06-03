@@ -38,9 +38,6 @@ st.markdown("""
 # ---------------------------------------------------------------- sidebar
 st.sidebar.title("📈 P-TRACK")
 st.sidebar.caption("Bullish technical setup screener")
-st.caption("ℹ️ Prices are end-of-day data from Yahoo Finance and can lag the live "
-           "market by ~15 min — always confirm the current price in your broker "
-           "before trading.")
 
 mode = st.sidebar.radio("Mode", ["Screen for setups", "Backtest the rules"])
 
