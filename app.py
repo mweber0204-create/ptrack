@@ -38,8 +38,6 @@ st.markdown("""
 # ---------------------------------------------------------------- sidebar
 st.sidebar.title("📈 P-TRACK")
 st.sidebar.caption("Bullish technical setup screener")
-st.caption("📱 On a phone? Tap the **»** arrow at the top-left to open the "
-           "controls, pick a universe, then come back and tap **Run**.")
 st.caption("ℹ️ Prices are end-of-day data from Yahoo Finance and can lag the live "
            "market by ~15 min — always confirm the current price in your broker "
            "before trading.")
