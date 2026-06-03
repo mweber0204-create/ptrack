@@ -10,6 +10,7 @@ RUN IT:
     streamlit run app.py
 Your browser opens automatically at http://localhost:8501
 """
+import os
 import time
 import pandas as pd
 import streamlit as st
@@ -153,6 +154,15 @@ def run_backtest(universe, status, bar):
         time.sleep(0.3)
     return trades
 
+# ---------------------------------------------------------------- shark art
+SHARK_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "shark.png")
+
+def show_shark():
+    if os.path.exists(SHARK_PATH):
+        c1, c2, c3 = st.columns([1, 2, 1])
+        with c2:
+            st.image(SHARK_PATH, use_container_width=True)
+
 # ---------------------------------------------------------------- main UI
 st.title("P-TRACK — Bullish Setup Screener")
 
@@ -197,6 +207,8 @@ if mode == "Screen for stocks":
                     c3.metric("Target / R-R", f"{m['target']:.2f}", f"{m['rr']:.2f} R")
                     st.caption("**Why this rank:** " + P.rank_reason(m, r))
                     st.caption("**Volume:** " + P.vol_trend_text(m))
+
+    show_shark()
 
 else:  # Backtest
     st.write("Measure how these breakout setups performed historically "
