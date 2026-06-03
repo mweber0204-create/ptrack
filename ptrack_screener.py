@@ -122,6 +122,9 @@ CFG = dict(
     bt_slippage_pct        = 0.0,    # extra % paid above entry to model slippage
     bt_cost_R              = 0.0,    # fixed round-trip cost per trade, in R
     bt_breakeven_after_1R  = False,  # once +1R, move stop to entry (lock breakeven)
+    min_rr                 = 0.0,    # hide/skip setups with reward:risk below this
+    tight_stop             = False,  # place stop just under support (smaller risk -> higher R/R)
+    tight_stop_buffer      = 0.005,  # the "just under support" gap used when tight_stop is on
 )
 
 # Canonical pattern names (use these in allowed_patterns)
@@ -470,7 +473,10 @@ def evaluate(df, spy, tkr, name):
     breakout = base["base_high"]
     entry    = breakout * (1 + CFG["breakout_entry_buffer"])
     support  = base["support"]
-    stop     = support * (1 - CFG["stop_buffer"])
+    # tighter stop sits just under support (less risk -> better reward:risk,
+    # but easier to hit); otherwise the standard 3%-below-support stop.
+    stop_buf = CFG["tight_stop_buffer"] if CFG["tight_stop"] else CFG["stop_buffer"]
+    stop     = support * (1 - stop_buf)
     base_depth = base["base_high"] - base["base_low"]
     # measured move: flagpole for flags, base depth otherwise
     if pattern in ("Bull Flag", "High-Tight Flag"):
@@ -498,6 +504,10 @@ def evaluate(df, spy, tkr, name):
         base_vol=base["base_vol"], prior_vol=base["prior_vol"],
     )
     m["score"], m["parts"] = score_setup(m)
+
+    # ---- REWARD:RISK GATE (optional) ----
+    if CFG["min_rr"] and m["rr"] < CFG["min_rr"]:
+        return None, f"R/R {m['rr']:.2f} below min {CFG['min_rr']}"
 
     # ---- MIN-SCORE SELECTIVITY (optional) ----
     if CFG["min_score"] and m["score"] < CFG["min_score"]:
@@ -799,6 +809,8 @@ def run_backtest(all_trades):
     if CFG["allowed_patterns"]:        flags.append(f"patterns={sorted(CFG['allowed_patterns'])}")
     if CFG["require_market_uptrend"]:  flags.append("market>200d")
     if CFG["min_score"]:               flags.append(f"min_score={CFG['min_score']}")
+    if CFG["min_rr"]:                  flags.append(f"min_R/R={CFG['min_rr']}")
+    if CFG["tight_stop"]:              flags.append("tight_stop")
     if CFG["bt_slippage_pct"]:         flags.append(f"slippage={CFG['bt_slippage_pct']*100:.2f}%")
     if CFG["bt_cost_R"]:               flags.append(f"cost={CFG['bt_cost_R']}R")
     if CFG["bt_breakeven_after_1R"]:   flags.append("breakeven@1R")
@@ -865,6 +877,10 @@ def main():
     ap.add_argument("--cost-r", type=float, default=0.0, help="backtest round-trip cost in R")
     ap.add_argument("--breakeven", action="store_true",
                     help="backtest: move stop to breakeven once +1R")
+    ap.add_argument("--min-rr", type=float, default=0.0,
+                    help="hide/skip setups with reward:risk below this (e.g. 1.5)")
+    ap.add_argument("--tight-stop", action="store_true",
+                    help="place the stop just under support (smaller risk, higher R/R)")
     args = ap.parse_args()
     if args.backtest_step:
         CFG["bt_step"] = args.backtest_step
@@ -883,6 +899,8 @@ def main():
     CFG["bt_slippage_pct"]        = args.slippage
     CFG["bt_cost_R"]              = args.cost_r
     CFG["bt_breakeven_after_1R"]  = args.breakeven
+    CFG["min_rr"]                 = args.min_rr
+    CFG["tight_stop"]             = args.tight_stop
 
     print(f"[1/4] Building universe: {args.universe}")
     tickers = load_universe(args.universe)

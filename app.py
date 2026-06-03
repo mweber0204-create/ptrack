@@ -64,6 +64,13 @@ with st.sidebar.expander("⚙️ Edge filters (advanced)"):
                                 help="Skips long setups during weak markets.")
     min_score = st.slider("Minimum setup score", 0, 90, 0, step=5,
                           help="Only take setups scoring at least this. 0 = no cutoff.")
+    min_rr = st.slider("Minimum reward-to-risk", 0.0, 3.0, 0.0, step=0.25,
+                       help="Hide setups whose target is too close to the stop. "
+                            "0 = show all. Try 1.5. Note: with the standard stop, "
+                            "most setups are under 1, so a high value may show few names.")
+    tight_stop = st.checkbox("Use tighter stop (just under support)",
+                             help="Smaller risk = higher reward-to-risk, but the stop "
+                                  "is easier to hit. Test it in Backtest mode before trusting it.")
     vcp_bonus = st.slider("VCP ranking bonus", 0, 20, 0, step=2,
                           help="Pushes VCP setups higher in the list.")
 
@@ -77,6 +84,8 @@ else:
     P.CFG["allowed_patterns"] = None
 P.CFG["require_market_uptrend"] = market_filter
 P.CFG["min_score"] = float(min_score)
+P.CFG["min_rr"] = float(min_rr)
+P.CFG["tight_stop"] = tight_stop
 P.CFG["vcp_score_bonus"] = float(vcp_bonus)
 
 st.sidebar.markdown("---")
