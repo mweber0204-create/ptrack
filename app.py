@@ -18,6 +18,7 @@ import streamlit.components.v1 as components
 
 import ptrack_screener as P
 import squeeze_screener as SQ
+import squeeze_history as HIST
 
 st.set_page_config(page_title="P-TRACK Screener", layout="centered",
                    page_icon="📈", initial_sidebar_state="expanded")
@@ -41,7 +42,11 @@ st.markdown("""
 st.sidebar.title("📈 P-TRACK")
 st.sidebar.caption("Bullish technical setup screener")
 
-mode = st.sidebar.radio("Mode", ["🔥 Squeeze Radar", "Screen for stocks", "Backtest the rules"])
+_adv = st.sidebar.checkbox("Show advanced tools (breakout + backtest)", value=False)
+if _adv:
+    mode = st.sidebar.radio("Mode", ["🔥 Squeeze Radar", "Screen for stocks", "Backtest the rules"])
+else:
+    mode = "🔥 Squeeze Radar"
 
 universe = st.sidebar.selectbox(
     "Universe",
@@ -156,7 +161,7 @@ def run_backtest(universe, status, bar):
     return trades
 
 # ---------------------------------------------------------------- hero logo
-LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo.png")
+LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mainpic.jpg")
 
 def show_logo():
     if os.path.exists(LOGO_PATH):
@@ -173,6 +178,12 @@ def render_squeeze_candidate(c, header, expanded=True):
         m2.metric("Data coverage", f"{cov*100:.0f}%" if cov is not None else "—")
         m3.metric("5-day move", f"{c['ret_5d']*100:+.0f}%" if c.get("ret_5d") is not None else "—",
                   "LATE" if c.get("late") else "")
+        if c.get("required_fails"):
+            st.markdown("**❌ Fails a required condition:**")
+            for rf in c["required_fails"]:
+                st.markdown(f"- {rf}")
+        if c.get("required_unknown"):
+            st.caption("Unknown (free-data gaps): " + "; ".join(c["required_unknown"]))
         if c.get("history_flags"):
             st.markdown("**📈 What CHANGED since last scan (the early edge):**")
             for hf in c["history_flags"]:
@@ -203,6 +214,17 @@ st.title("P-TRACK — Bullish Setup Screener")
 
 if mode == "🔥 Squeeze Radar":
     st.subheader("Squeeze Radar — early-detection (v1)")
+    try:
+        _cloud = HIST.using_cloud()
+        _rows, _days = HIST.snapshot_count()
+        st.caption(("🧠 Memory: **cloud (Supabase)** — persists across reboots. "
+                    if _cloud else
+                    "🧠 Memory: **local file** — on the hosted app this resets on reboot; "
+                    "run on your Mac (or add Supabase) to keep history. ")
+                   + f"Logged: {_rows} rows over {_days} day(s). The more you run it, "
+                     "the more 'what changed' signals appear.")
+    except Exception:
+        pass
     st.write("Finds stocks **building** short-squeeze pressure using free, *leading* "
              "signals — not the 2-week-old short-interest lists everyone sees. It seeds "
              "candidates from recent **SEC 13D/13G filings**, **insider buys**, and "
@@ -255,10 +277,11 @@ if mode == "🔥 Squeeze Radar":
         if not res:
             status.warning("No candidates surfaced. Try again shortly, or add tickers above.")
         else:
-            prime = [c for c in res if not c.get("late")]
             late  = [c for c in res if c.get("late")]
-            status.success(f"{len(prime)} PRE-move candidates · {len(late)} already-running (late). "
-                           "Pre-move setups are ranked first.")
+            disq  = [c for c in res if c.get("disqualified") and not c.get("late")]
+            prime = [c for c in res if not c.get("late") and not c.get("disqualified")]
+            status.success(f"{len(prime)} qualified PRE-move candidates · {len(disq)} fail required "
+                           f"conditions · {len(late)} already-running (late).")
 
             def render(c, r):
                 render_squeeze_candidate(
@@ -280,6 +303,12 @@ if mode == "🔥 Squeeze Radar":
                 st.info("No early setups cleared the filter right now. That's normal — "
                         "true pre-squeeze conditions are rare. Lower the run-up cutoff or check back.")
 
+            if disq:
+                with st.expander(f"❌ Fail required conditions ({len(disq)}) — "
+                                 "not real squeeze candidates (low SI, fast exit, thin volume, or stale).",
+                                 expanded=False):
+                    dq = pd.DataFrame([SQ.to_row(c) for c in disq])
+                    st.dataframe(dq, use_container_width=True, hide_index=True)
             if late:
                 with st.expander(f"⛔ Already running — too late ({len(late)}). "
                                  "Shown for awareness; you'd be chasing.", expanded=False):
